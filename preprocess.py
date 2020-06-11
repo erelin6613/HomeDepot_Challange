@@ -1,35 +1,25 @@
 import os
 import numpy as np
 import pandas as pd
-from nltk.tokenize import TweetTokenizer
 from string import punctuation
 
-from sentencepiece_train import *
+from keras_tokenizer import Tokenizer
 
-tokenizer = TweetTokenizer()
-
-def tokenize(string):
-	t = [w.lower() for w in tokenizer.tokenize(string) 
-	if w not in punctuation]
-	return t
+tokenizer = Tokenizer(oov_token='OOV')
 
 def preprocess_df(df, cols=['product_title', 
 	'search_term'],
 	test=False):
 	if not test:
 		df = map_scores(df)
-	for col in cols:
-		print('Encoding', col)
-		df.loc[:, col+'_tokenized'] = df[col].apply(tokenize)
-		df = df.drop(col, axis=1)
 	return df
 
-def texts_to_numeric(df, 
-	cols=['product_title_tokenized', 
-	'search_term_tokenized']):
+def texts_to_numeric(df, tokenizer,
+	cols=['product_title', 
+	'search_term']):
 	for col in cols:
 		print('Getting IDs:', col)
-		df.loc[:, col+'_ids'] = df[col].apply(tokens_to_ids)
+		df.loc[:, col+'_ids'] = tokenizer.texts_to_sequences(df[col])
 		df = df.drop(col, axis=1)
 	return df
 
@@ -47,15 +37,6 @@ def map_scores(df):
 	df.loc[:, 'relevance'] = df['relevance'].map(scores)
 	return df
 
-def cat_encoder(df, columns, target=None, test=False, encoder=None):
-    if test:
-        return encoder.transform(df)
-    else:
-        encoder = OneHotEncoder(cols=columns, return_df=True)
-        encoder.fit(df, target)
-        df = encoder.transform(df)
-        return (df, encoder)
-
 def pad_sequences(l, max_len):
 	arr = np.array(l)
 	if len(arr) > max_len:
@@ -63,14 +44,14 @@ def pad_sequences(l, max_len):
 	elif len(arr) == max_len:
 		return arr.astype(np.int64)
 	else:
-		mask = np.ones((max_len, ))*(-1)
+		mask = np.zeros((max_len, ))
 		mask[:arr.shape[0]] = arr
 		return mask.astype(np.int64)
 
 def get_numpy_arrays(df, cols=['product_title', 
 	'search_term'], target_col=None):
-	X = (df['search_term_tokenized_ids'].values, 
-		df['product_title_tokenized_ids'].values)
+	X = (df['search_term_ids'].values, 
+		df['product_title_ids'].values)
 	X_1 = []
 	X_2 = []
 	for i in range(len(X[0])):
@@ -82,54 +63,39 @@ def get_numpy_arrays(df, cols=['product_title',
 		y = np.array([[int(x)] for x in df[target_col].values])
 		return (X_1, X_2, y)
 	return (X_1, X_2)
-	pass
 
 def main():
-	train_df = pd.read_csv('train.csv', encoding='latin-1')
-	test_df = pd.read_csv('test.csv', encoding='latin-1')
+	train_df = pd.read_csv('train.csv', encoding='latin-1') #.sample(n=1000)
+	test_df = pd.read_csv('test.csv', encoding='latin-1') #.sample(n=1000)
 	desc_df = pd.read_csv('product_descriptions.csv', encoding='latin-1')
 	train_df = pd.merge(train_df, desc_df, on='product_uid', how='left')
 	del desc_df
 	train_df = preprocess_df(train_df)
-	test_df = preprocess_df(test_df, 
-		cols=['product_title', 'search_term'], test=True)
+	print('Tokenizing inputs...')
+	tokenizer.fit_on_texts(train_df['product_title'])
+	tokenizer.fit_on_texts(test_df['product_title'])
+	tokenizer.fit_on_texts(train_df['search_term'])
+	tokenizer.fit_on_texts(test_df['search_term'])
 
-	# skip this step if you have text file with vocab
-	if not os.path.isfile('tokens.txt'):
-		texts = []
-		texts = append_lists(texts, 
-			train_df['product_title_tokenized'].tolist())
-		texts = append_lists(texts, 
-			train_df['search_term_tokenized'].tolist())
-		texts = append_lists(texts, 
-			train_df['product_description_tokenized'].tolist())
-		texts = append_lists(texts, 
-			test_df['product_title_tokenized'].tolist())
-		texts = append_lists(texts, 
-			test_df['search_term_tokenized'].tolist())
-		with open('tokens.txt', 'a') as f:
-			for t in texts:
-				for w in t:
-					f.write(w+'\n')
-		del texts
-
-	# skip this step if you have SentencePiece model
-	if not os.path.isfile('m.model'):
-		train_sp_model('tokens.txt')
-	train_df = texts_to_numeric(train_df)
-	test_df = texts_to_numeric(test_df, cols=['product_title_tokenized', 
-		'search_term_tokenized'])
+	train_df = texts_to_numeric(train_df, tokenizer)
+	test_df = texts_to_numeric(test_df, tokenizer)
 	train_df.loc[:, 
-		'product_title_tokenized_ids'] = train_df['product_title_tokenized_ids'].apply(
+		'product_title_ids'] = train_df['product_title_ids'].apply(
 		pad_sequences, args=(15, ))
 	train_df.loc[:, 
-		'search_term_tokenized_ids'] = train_df['search_term_tokenized_ids'].apply(
+		'search_term_ids'] = train_df['search_term_ids'].apply(
+		pad_sequences, args=(5, ))
+	test_df.loc[:, 
+		'product_title_ids'] = test_df['product_title_ids'].apply(
+		pad_sequences, args=(15, ))
+	test_df.loc[:, 
+		'search_term_ids'] = test_df['search_term_ids'].apply(
 		pad_sequences, args=(5, ))
 	train_df = train_df.drop('product_description', axis=1)
 	X1_train, X2_train, y_train = get_numpy_arrays(train_df, target_col='relevance')
 	X1_test, X2_test = get_numpy_arrays(test_df)
 
-	return X1_train, X2_train, y_train, X1_test, X2_train
+	return X1_train, X2_train, y_train, X1_test, X2_train, tokenizer
 
 if __name__ == '__main__':
 	main()
